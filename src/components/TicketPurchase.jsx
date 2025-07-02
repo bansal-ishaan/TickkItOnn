@@ -3,213 +3,186 @@
 import { useState, useEffect } from "react"
 import { ethers } from "ethers"
 import { useWeb3 } from "./Web3Context"
-import { CONTRACT_ADDRESS, CONTRACT_ABI } from "./contract"
-import CrossChainPurchase from "./CrossChainPurchase"
+// IMPORTANT: Import the object with all addresses, not the single one
+import { CONTRACT_ADDRESSES, CONTRACT_ABI } from "./contract"
 
+// This is now our single, intelligent purchase component
 const TicketPurchase = ({ event, onClose, onPurchaseSuccess }) => {
-  const { chainId, account, getContract } = useWeb3()
+  // Get all the tools we need from our context
+  const { chainId, account, getContract, getContractForNetwork, supportedNetworks } = useWeb3()
+
   const [quantity, setQuantity] = useState(1)
-  const [showCrossChain, setShowCrossChain] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-  const [ticketCost, setTicketCost] = useState(0n)
+  const [cost, setCost] = useState(null) // Will hold cost object for same-chain or cross-chain
 
+  // Determine if this is a cross-chain operation
+  const isCrossChain = event.networkId !== chainId
+  const sourceNetworkName = supportedNetworks[chainId]?.name
+
+  // This useEffect hook is the "brain". It calculates the cost, whether same-chain or cross-chain.
   useEffect(() => {
-    calculateTicketCost()
-  }, [quantity, event])
+    const calculateCost = async () => {
+      // Don't run if we don't have the necessary info
+      if (!event || !account || !chainId) return
 
-  const calculateTicketCost = async () => {
-    try {
-      const contract = getContract(CONTRACT_ADDRESS, CONTRACT_ABI)
-      if (!contract) return
+      setIsLoading(true)
+      setCost(null) // Reset cost on quantity change
 
-      const cost = await contract.calculateCrossChainTicketCost(event.eventId, BigInt(quantity))
-      setTicketCost(cost)
-    } catch (error) {
-      console.error("Error calculating ticket cost:", error)
+      try {
+        if (isCrossChain) {
+          // --- CROSS-CHAIN COST CALCULATION ---
+          // We need to call the contract on the SOURCE chain (where the user's wallet is)
+          const sourceContractAddress = CONTRACT_ADDRESSES[chainId]
+          if (!sourceContractAddress) throw new Error(`Contract not deployed on your connected network (${sourceNetworkName}).`)
+          
+          const contract = getContract(sourceContractAddress, CONTRACT_ABI)
+          if (!contract) return
+
+          const estimate = await contract.estimateCrossChainFee(
+            supportedNetworks[event.networkId].selector, // Destination chain selector
+            event.contractAddress, // Destination contract address
+            event.eventId,
+            BigInt(quantity)
+          )
+          // The result from estimateCrossChainFee is an array: [fee, ticketCost, total]
+          setCost({
+            fee: ethers.formatEther(estimate[0]),
+            ticketCost: ethers.formatEther(estimate[1]),
+            total: ethers.formatEther(estimate[2]),
+            totalInWei: estimate[2]
+          })
+
+        } else {
+          // --- SAME-CHAIN COST CALCULATION ---
+          // We can read directly from the event's contract
+          const contract = getContractForNetwork(event.networkId, event.contractAddress, CONTRACT_ABI)
+          if (!contract) return
+          
+          const totalInWei = await contract.calculateCrossChainTicketCost(event.eventId, BigInt(quantity))
+          setCost({
+            total: ethers.formatEther(totalInWei),
+            totalInWei: totalInWei
+          })
+        }
+      } catch (error) {
+        console.error("Error calculating cost:", error)
+        // Optionally display this error to the user
+      } finally {
+        setIsLoading(false)
+      }
     }
-  }
 
+    calculateCost()
+  }, [quantity, event, chainId, account, isCrossChain])
+
+  // This is the single "Purchase" function that handles both cases
   const handlePurchase = async () => {
-    if (!account) {
-      alert("Please connect your wallet")
+    if (!cost) {
+      alert("Cost has not been calculated yet. Please wait.")
       return
     }
 
     setIsLoading(true)
-
+    
     try {
-      const contract = getContract(CONTRACT_ADDRESS, CONTRACT_ABI)
-      if (!contract) {
-        throw new Error("Contract not available")
+      if (isCrossChain) {
+        // --- CROSS-CHAIN PURCHASE EXECUTION ---
+        const sourceContractAddress = CONTRACT_ADDRESSES[chainId]
+        const contract = getContract(sourceContractAddress, CONTRACT_ABI)
+        
+        const tx = await contract.buyTicketsCrossChain(
+          supportedNetworks[event.networkId].selector,
+          event.contractAddress,
+          event.eventId,
+          BigInt(quantity),
+          { value: cost.totalInWei }
+        )
+        await tx.wait()
+        alert("Cross-chain purchase initiated! It may take a few minutes to confirm on the destination chain.")
+
+      } else {
+        // --- SAME-CHAIN PURCHASE EXECUTION ---
+        const contract = getContract(event.contractAddress, CONTRACT_ABI)
+        
+        const tx = await contract.buyTickets(
+          event.eventId,
+          BigInt(quantity),
+          { value: cost.totalInWei }
+        )
+        await tx.wait()
+        alert("Tickets purchased successfully!")
       }
 
-      const tx = await contract.buyTickets(event.eventId, BigInt(quantity), {
-        value: ticketCost,
-      })
-
-      await tx.wait()
-
-      // Store purchase info for dashboard display
       if (onPurchaseSuccess) {
-        onPurchaseSuccess(event, quantity, totalCost)
+        onPurchaseSuccess(event, quantity, cost.total)
       }
-
-      alert("Tickets purchased successfully!")
       onClose()
+
     } catch (error) {
-      console.error("Error purchasing tickets:", error)
-      alert("Error purchasing tickets. Please try again.")
+      console.error("Purchase failed:", error)
+      alert(`Transaction failed. Check console for details.`)
     } finally {
       setIsLoading(false)
     }
   }
 
-  const calculateDynamicPrices = () => {
-    const prices = []
-    const basePrice = Number(ethers.formatEther(event.basePrice))
-
-    for (let i = 0; i < quantity; i++) {
-      const ticketNumber = Number(event.ticketsSold) + i
-      const increment = basePrice * (ticketNumber * 0.001) // 0.1% increment per ticket
-      prices.push(basePrice + increment)
-    }
-
-    return prices
-  }
-
-  const dynamicPrices = calculateDynamicPrices()
-  const totalCost = dynamicPrices.reduce((sum, price) => sum + price, 0)
   const availableTickets = Number(event.totalTickets) - Number(event.ticketsSold)
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
         <div className="p-6">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold text-gray-900">Purchase Tickets</h2>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-bold text-gray-900">
+              {isCrossChain ? "Cross-Chain Purchase" : "Purchase Tickets"}
+            </h2>
+            <button onClick={onClose} className="text-2xl font-light text-gray-400 hover:text-gray-600">×</button>
           </div>
 
-          {/* Event Info */}
-          <div className="bg-gray-50 rounded-lg p-4 mb-6">
-            <h3 className="font-bold text-lg mb-2">{event.name}</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
-              <div className="flex items-center">
-                <span className="mr-2">📍</span>
-                <span>{event.venue}</span>
-              </div>
-              <div className="flex items-center">
-                <span className="mr-2">📅</span>
-                <span>{new Date(Number(event.eventDate) * 1000).toLocaleString()}</span>
-              </div>
-              <div className="flex items-center">
-                <span className="mr-2">🎫</span>
-                <span>{availableTickets} tickets available</span>
-              </div>
-              <div className="flex items-center">
-                <span className="mr-2">💰</span>
-                <span>Base Price: {ethers.formatEther(event.basePrice)} ETH</span>
-              </div>
+          <div className="bg-gray-50 rounded-lg p-4 mb-6 text-sm">
+            <p><strong>Event:</strong> {event.name}</p>
+            <p><strong>Location:</strong> {event.venue}</p>
+            <p><strong>Event Chain:</strong> {event.networkName}</p>
+            {isCrossChain && <p><strong>Your Chain:</strong> {sourceNetworkName}</p>}
+          </div>
+          
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Number of Tickets</label>
+            <div className="flex items-center space-x-4">
+                <button onClick={() => setQuantity(q => Math.max(1, q - 1))} className="px-3 py-1 bg-gray-200 rounded">-</button>
+                <span className="text-xl font-bold">{quantity}</span>
+                <button onClick={() => setQuantity(q => Math.min(availableTickets, q + 1))} className="px-3 py-1 bg-gray-200 rounded">+</button>
+            </div>
+          </div>
+          
+          <div className="mb-6">
+            <h4 className="font-medium text-gray-900 mb-2">Cost Breakdown</h4>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-2 text-sm">
+              {!cost ? (
+                <p>Calculating cost...</p>
+              ) : isCrossChain ? (
+                <>
+                  <div className="flex justify-between"><span>Ticket(s) Cost</span><span>{cost.ticketCost} ETH</span></div>
+                  <div className="flex justify-between"><span>Cross-Chain Fee</span><span>{cost.fee} ETH</span></div>
+                  <div className="border-t border-blue-300 pt-2 mt-2 flex justify-between font-bold"><span>Total</span><span>{cost.total} ETH</span></div>
+                </>
+              ) : (
+                <div className="flex justify-between font-bold"><span>Total Cost</span><span>{cost.total} ETH</span></div>
+              )}
             </div>
           </div>
 
-          {!showCrossChain ? (
-            <>
-              {/* Quantity Selection */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Number of Tickets</label>
-                <div className="flex items-center space-x-4">
-                  <button
-                    onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    className="w-10 h-10 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center transition-colors"
-                  >
-                    -
-                  </button>
-                  <span className="text-xl font-bold w-12 text-center">{quantity}</span>
-                  <button
-                    onClick={() => setQuantity(Math.min(availableTickets, quantity + 1))}
-                    className="w-10 h-10 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center transition-colors"
-                  >
-                    +
-                  </button>
-                  <input
-                    type="range"
-                    min="1"
-                    max={Math.min(availableTickets, 10)}
-                    value={quantity}
-                    onChange={(e) => setQuantity(Number.parseInt(e.target.value))}
-                    className="flex-1 ml-4"
-                  />
-                </div>
-              </div>
-
-              {/* Dynamic Pricing Breakdown */}
-              <div className="mb-6">
-                <h4 className="font-medium text-gray-900 mb-3">Price Breakdown</h4>
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="space-y-2">
-                    {dynamicPrices.map((price, index) => (
-                      <div key={index} className="flex justify-between text-sm">
-                        <span>Ticket #{Number(event.ticketsSold) + index + 1}</span>
-                        <span className="font-medium">{price.toFixed(6)} ETH</span>
-                      </div>
-                    ))}
-                    <div className="border-t border-blue-300 pt-2 mt-2">
-                      <div className="flex justify-between font-bold">
-                        <span>Total Cost</span>
-                        <span>{totalCost.toFixed(6)} ETH</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Purchase Options */}
-              <div className="space-y-4">
-                <button
-                  onClick={handlePurchase}
-                  disabled={isLoading || !account || availableTickets === 0}
-                  className="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:from-purple-700 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                >
-                  {isLoading ? (
-                    <div className="flex items-center justify-center">
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-                      Processing...
-                    </div>
-                  ) : (
-                    `Buy ${quantity} Ticket${quantity > 1 ? "s" : ""} on Current Network`
-                  )}
-                </button>
-
-                <button
-                  onClick={() => setShowCrossChain(true)}
-                  className="w-full bg-white border-2 border-purple-600 text-purple-600 py-3 px-6 rounded-lg font-medium hover:bg-purple-50 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-all"
-                >
-                  🌐 Buy from Another Network
-                </button>
-              </div>
-
-              {/* Dynamic Pricing Info */}
-              <div className="mt-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                <h4 className="font-medium text-yellow-900 mb-2">📈 Dynamic Pricing</h4>
-                <p className="text-sm text-yellow-700">
-                  Ticket prices increase by 0.1% for each ticket sold. Buy early to get the best price!
-                </p>
-              </div>
-            </>
-          ) : (
-            <CrossChainPurchase
-              event={event}
-              quantity={quantity}
-              onBack={() => setShowCrossChain(false)}
-              onClose={onClose}
-            />
-          )}
+          <button
+            onClick={handlePurchase}
+            disabled={isLoading || !cost || availableTickets < quantity}
+            className={`w-full py-3 px-6 rounded-lg font-medium text-white transition-all disabled:opacity-50 disabled:cursor-wait ${
+              isCrossChain 
+                ? "bg-gradient-to-r from-orange-500 to-red-500" 
+                : "bg-gradient-to-r from-purple-600 to-blue-600"
+            }`}
+          >
+            {isLoading ? "Processing..." : `Confirm Purchase (${cost?.total || '...'} ETH)`}
+          </button>
         </div>
       </div>
     </div>

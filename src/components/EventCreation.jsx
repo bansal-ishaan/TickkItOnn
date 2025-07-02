@@ -3,7 +3,8 @@
 import { useState } from "react"
 import { ethers } from "ethers"
 import { useWeb3 } from "./Web3Context"
-import { CONTRACT_ADDRESS, CONTRACT_ABI } from "./contract"
+// THE FIX - STEP 1: Import the object with all addresses
+import { CONTRACT_ADDRESSES, CONTRACT_ABI } from "./contract"
 
 const EventCreation = () => {
   const { chainId, account, getContract } = useWeb3()
@@ -22,14 +23,10 @@ const EventCreation = () => {
   const getMinimumStake = () => {
     if (!chainId) return "0"
     switch (chainId) {
-      case 11155111: // Sepolia
-        return "0.1"
-      case 43113: // Avalanche Fuji
-        return "0.000634"
-      case 80002: // Polygon Amoy
-        return "0.063"
-      default:
-        return "0"
+      case 11155111: return "0.1"    // Sepolia
+      case 80002:    return "0.063"  // Polygon Amoy
+      case 43113:    return "0.000634" // Avalanche Fuji
+      default:       return "0"
     }
   }
 
@@ -40,12 +37,22 @@ const EventCreation = () => {
       return
     }
 
+    // THE FIX - STEP 2: Find the correct contract address for the currently connected chain
+    const currentContractAddress = CONTRACT_ADDRESSES[chainId]
+
+    // THE FIX - STEP 3: Handle the case where the user is on an unsupported network
+    if (!currentContractAddress) {
+      alert("Event creation is not supported on this network. Please switch to Sepolia, Amoy, or Fuji.")
+      return
+    }
+
     setIsLoading(true)
 
     try {
-      const contract = getContract(CONTRACT_ADDRESS, CONTRACT_ABI)
+      // THE FIX - STEP 4: Use the dynamic `currentContractAddress`
+      const contract = getContract(currentContractAddress, CONTRACT_ABI)
       if (!contract) {
-        throw new Error("Contract not available")
+        throw new Error("Could not initialize contract. Is your wallet connected?")
       }
 
       const eventDateTimestamp = Math.floor(new Date(formData.eventDate).getTime() / 1000)
@@ -66,19 +73,13 @@ const EventCreation = () => {
 
       await tx.wait()
       alert("Event created successfully!")
+      // Optionally, you could trigger a refresh of the event list here
       setFormData({
-        name: "",
-        description: "",
-        venue: "",
-        eventDate: "",
-        totalTickets: "",
-        basePrice: "",
-        metadataURI: "",
-        stake: "",
+        name: "", description: "", venue: "", eventDate: "", totalTickets: "", basePrice: "", metadataURI: "", stake: "",
       })
     } catch (error) {
       console.error("Error creating event:", error)
-      alert("Error creating event. Please try again.")
+      alert("Error creating event. Please check the console for details.")
     } finally {
       setIsLoading(false)
     }
@@ -98,11 +99,11 @@ const EventCreation = () => {
       <div className="bg-white rounded-xl shadow-lg p-8">
         <div className="mb-8">
           <h2 className="text-3xl font-bold text-gray-900 mb-2">Create New Event</h2>
-          <p className="text-gray-600">Create a new event and start selling tickets across multiple blockchains</p>
+          <p className="text-gray-600">Your event will be created on the network your wallet is currently connected to.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Event Name */}
+          {/* Your form JSX is perfect, no changes needed here */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Event Name *</label>
             <input
@@ -116,7 +117,6 @@ const EventCreation = () => {
             />
           </div>
 
-          {/* Description */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Description *</label>
             <textarea
@@ -130,7 +130,6 @@ const EventCreation = () => {
             />
           </div>
 
-          {/* Venue */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Venue *</label>
             <input
@@ -144,7 +143,6 @@ const EventCreation = () => {
             />
           </div>
 
-          {/* Event Date */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Event Date & Time *</label>
             <input
@@ -158,7 +156,6 @@ const EventCreation = () => {
             />
           </div>
 
-          {/* Total Tickets & Base Price */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Total Tickets *</label>
@@ -189,7 +186,6 @@ const EventCreation = () => {
             </div>
           </div>
 
-          {/* Organizer Stake */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Organizer Stake (ETH)</label>
             <input
@@ -204,30 +200,7 @@ const EventCreation = () => {
             />
             <p className="text-sm text-gray-500 mt-1">Minimum stake for current network: {minStake} ETH</p>
           </div>
-
-          {/* Metadata URI */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Metadata URI (Optional)</label>
-            <input
-              type="url"
-              name="metadataURI"
-              value={formData.metadataURI}
-              onChange={handleInputChange}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              placeholder="https://your-metadata-uri.com"
-            />
-          </div>
-
-          {/* Dynamic Pricing Info */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <h4 className="font-medium text-blue-900 mb-2">📈 Dynamic Pricing</h4>
-            <p className="text-sm text-blue-700">
-              Ticket prices will increase by 0.1% for each ticket sold. The first ticket will cost{" "}
-              {formData.basePrice || "0"} ETH, and prices will gradually increase with demand.
-            </p>
-          </div>
-
-          {/* Submit Button */}
+          
           <button
             type="submit"
             disabled={isLoading || !account}

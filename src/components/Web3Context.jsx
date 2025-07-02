@@ -23,6 +23,7 @@ const SUPPORTED_NETWORKS = {
     chainId: "0xaa36a7",
     symbol: "ETH",
     explorer: "https://sepolia.etherscan.io",
+    selector: "16015286601757825753",
   },
   80002: {
     name: "Polygon Amoy",
@@ -30,6 +31,7 @@ const SUPPORTED_NETWORKS = {
     chainId: "0x13882",
     symbol: "MATIC",
     explorer: "https://amoy.polygonscan.com",
+    selector: "16281711391670634445",
   },
   43113: {
     name: "Avalanche Fuji",
@@ -37,6 +39,7 @@ const SUPPORTED_NETWORKS = {
     chainId: "0xa869",
     symbol: "AVAX",
     explorer: "https://testnet.snowtrace.io",
+    selector: "14767482510784806043",
   },
 }
 
