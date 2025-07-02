@@ -1,3 +1,5 @@
+
+
 "use client"
 
 import { createContext, useContext, useState, useEffect } from "react"
@@ -13,24 +15,25 @@ export const useWeb3 = () => {
   return context
 }
 
+// This now reads from your .env.local file for better stability
 const SUPPORTED_NETWORKS = {
   11155111: {
     name: "Ethereum Sepolia",
-    rpcUrl: "https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161",
+    rpcUrl: process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL,
     chainId: "0xaa36a7",
     symbol: "ETH",
     explorer: "https://sepolia.etherscan.io",
   },
   80002: {
     name: "Polygon Amoy",
-    rpcUrl: "https://rpc-amoy.polygon.technology",
+    rpcUrl: process.env.NEXT_PUBLIC_AMOY_RPC_URL,
     chainId: "0x13882",
     symbol: "MATIC",
     explorer: "https://amoy.polygonscan.com",
   },
   43113: {
     name: "Avalanche Fuji",
-    rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
+    rpcUrl: process.env.NEXT_PUBLIC_FUJI_RPC_URL,
     chainId: "0xa869",
     symbol: "AVAX",
     explorer: "https://testnet.snowtrace.io",
@@ -45,70 +48,36 @@ export const Web3Provider = ({ children }) => {
   const [isConnecting, setIsConnecting] = useState(false)
 
   useEffect(() => {
-    checkConnection()
+    if (window.ethereum?.selectedAddress) {
+      connectWallet();
+    }
     setupEventListeners()
   }, [])
-
-  const checkConnection = async () => {
-    if (typeof window !== "undefined" && window.ethereum) {
-      try {
-        const provider = new ethers.BrowserProvider(window.ethereum)
-        const accounts = await provider.listAccounts()
-        if (accounts.length > 0) {
-          const signer = await provider.getSigner()
-          const network = await provider.getNetwork()
-          setProvider(provider)
-          setSigner(signer)
-          setAccount(accounts[0].address)
-          setChainId(Number(network.chainId))
-        }
-      } catch (error) {
-        console.error("Error checking connection:", error)
-      }
-    }
-  }
-
+  
   const setupEventListeners = () => {
-    if (typeof window !== "undefined" && window.ethereum) {
-      window.ethereum.on("accountsChanged", handleAccountsChanged)
-      window.ethereum.on("chainChanged", handleChainChanged)
+    if (window.ethereum) {
+      window.ethereum.on("accountsChanged", () => window.location.reload())
+      window.ethereum.on("chainChanged", () => window.location.reload())
     }
-  }
-
-  const handleAccountsChanged = (accounts) => {
-    if (accounts.length === 0) {
-      disconnect()
-    } else {
-      setAccount(accounts[0])
-    }
-  }
-
-  const handleChainChanged = (chainId) => {
-    setChainId(Number.parseInt(chainId, 16))
-    window.location.reload()
   }
 
   const connectWallet = async () => {
-    if (typeof window === "undefined" || !window.ethereum) {
-      alert("Please install MetaMask or another Web3 wallet")
+    if (!window.ethereum) {
+      alert("Please install MetaMask.")
       return
     }
-
     setIsConnecting(true)
     try {
-      await window.ethereum.request({ method: "eth_requestAccounts" })
       const provider = new ethers.BrowserProvider(window.ethereum)
       const signer = await provider.getSigner()
       const address = await signer.getAddress()
       const network = await provider.getNetwork()
-
       setProvider(provider)
       setSigner(signer)
       setAccount(address)
       setChainId(Number(network.chainId))
     } catch (error) {
       console.error("Error connecting wallet:", error)
-      alert("Failed to connect wallet")
     } finally {
       setIsConnecting(false)
     }
@@ -121,7 +90,7 @@ export const Web3Provider = ({ children }) => {
     setChainId(null)
   }
 
-  const switchNetwork = async (targetChainId) => {
+   const switchNetwork = async (targetChainId) => {
     if (!window.ethereum) return
 
     const network = SUPPORTED_NETWORKS[targetChainId]
@@ -158,9 +127,27 @@ export const Web3Provider = ({ children }) => {
     }
   }
 
+  // This is for WRITING to the blockchain (requires a connected wallet)
   const getContract = (address, abi) => {
     if (!signer) return null
     return new ethers.Contract(address, abi, signer)
+  }
+
+  // ** THIS IS THE NEW, IMPORTANT FUNCTION **
+  // This is for READING from ANY blockchain (does not require a wallet)
+  const getContractForNetwork = (networkId, address, abi) => {
+    const network = SUPPORTED_NETWORKS[networkId];
+    if (!network?.rpcUrl) {
+      console.error(`No RPC URL configured for network ID ${networkId}`);
+      return null;
+    }
+    try {
+      const readOnlyProvider = new ethers.JsonRpcProvider(network.rpcUrl);
+      return new ethers.Contract(address, abi, readOnlyProvider);
+    } catch (error) {
+      console.error(`Error creating read-only contract for network ${networkId}:`, error);
+      return null;
+    }
   }
 
   const value = {
@@ -174,6 +161,7 @@ export const Web3Provider = ({ children }) => {
     disconnect,
     switchNetwork,
     getContract,
+    getContractForNetwork, // <-- Make sure it's included here!
     isConnected: !!account,
   }
 

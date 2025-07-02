@@ -1,4 +1,8 @@
-export const CONTRACT_ADDRESS = "0x7a0066C9EfCFbCea21EEb24C46Df0Edde682d269"
+export const CONTRACT_ADDRESSES = {
+  11155111: "0x7a0066C9EfCFbCea21EEb24C46Df0Edde682d269", // Ethereum Sepolia
+  80002: "0x236Cd08389789A7b5C36472CD687726C4df8e16F",    // Polygon Amoy
+  43113: "0xfFE204B6a6982A21f118da6a9fDc49ebc47b9a0f",    // Avalanche Fuji
+};
 
 export const CONTRACT_ABI = [
   {
